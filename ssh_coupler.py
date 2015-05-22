@@ -1,4 +1,4 @@
-#!/usr/bin/env python
+#!/usr/bin/env python2
 """
 Daemon for administratively coupling two ssh channels together. Currently
 it only supports sftp. ssh_coupler.py requires that a user account exists on 
@@ -54,7 +54,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.client_addr = kwargs.pop('client_addr')
         self.transport = channel.get_transport()
         super(MiddleManSFTPServer, self).__init__(channel, name, server, *largs, **kwargs)
-
+        # start sftp client and authenticate as the user to end target sshd as specified in ssh_coupler.conf
         self.dest_username = self.transport.get_username()
         self.dest_hostname = _CONFIG[self.dest_username][0]
         self.dest_port = _CONFIG[self.dest_username][1]
@@ -62,7 +62,6 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.hostkeytype = None
         self.hostkey = None
         try:
-            print(self.dest_username, self.dest_hostname, self.dest_port, self.privkey)
             self.host_keys = paramiko.util.load_host_keys(os.path.expanduser('/home/%s/.ssh/known_hosts' % self.transport.get_username()))
         except IOError:
             root_logger.log(INFO, '*** Unable to open host keys file')
@@ -99,10 +98,10 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self._send_server_version()
         while True:
             try:
-                # source is connection between external client and the paramiko sftp server
-                # dest is connection between paramiko sftp client and internal sshd
+                # cross wires between source ssh client and end target sshd.
+                # source is connection between user client and the paramiko sftp server
+                # dest is connection between paramiko sftp client and end target sshd
                 source_t, source_data = self._read_packet()
-
             except EOFError:
                 self._log(INFO, '%s: Server received EOF -- end of session' % self.client_addr)
                 self.cleanup()
@@ -112,11 +111,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                 self._log(DEBUG, paramiko.util.tb_strings())
                 self.cleanup()
                 return
-            msg = paramiko.sftp.Message(source_data)
-            request_number = msg.get_int()
-            self._log(DEBUG, '%s: Request number: ' % self.client_addr + str(request_number))
             try:
-                # cross wires between source ssh client and inner sshd 
                 self.inner_SFTPClient._send_packet(source_t, source_data)
                 dest_t, dest_data = self.inner_SFTPClient._read_packet()
                 self._send_packet(dest_t, dest_data)
@@ -144,7 +139,7 @@ def start_server(host, port, HOST_KEY, level):
     while True:
         conn, addr = server_socket.accept()
         client_addr = addr[0] + ':' + str(addr[1])
-        root_logger.log(INFO, "Connection Received from: " + str(client_addr))
+        root_logger.log(INFO, 'Connection Received from: ' + str(client_addr))
         serv_transport = paramiko.Transport(conn)
         serv_transport.add_server_key(HOST_KEY)
         serv_transport.set_subsystem_handler('sftp', MiddleManSFTPServer, client_addr=client_addr)
