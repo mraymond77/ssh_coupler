@@ -13,7 +13,7 @@ connected through to the end target server.
 """
 
 import logging
-import optparse
+import argparse
 import os
 import pam
 import socket
@@ -154,26 +154,17 @@ def start_server(host, port, HOST_KEY, level):
 
 def main():
 
-    usage = """\
-    usage: sftpserver [options]\
-    """
-    parser = optparse.OptionParser(usage=textwrap.dedent(usage))
-    parser.add_option(
-        '--host', dest='host', default=HOST,
-        help='listen on HOST [default: %default]')
-    parser.add_option(
-        '-p', '--port', dest='port', type='int', default=PORT,
-        help='listen on PORT [default: %default]'
-        )
-    parser.add_option(
-        '-l', '--level', dest='level', default='INFO',
-        help='Debug level: WARNING, INFO, DEBUG [default: %default]'
-        )
+    parser = argparse.ArgumentParser(description="Couples two ssh channels together.")
+    parser.add_argument('--host', '-H', default=HOST, help='listen on HOST [default: {}]'.format(HOST))
+    parser.add_argument('--port', '-p', type=int, default=PORT, help='listen on PORT [default: {}]'.format(PORT))
+    parser.add_argument('--level', '-l', default='INFO', help='Debug level: WARNING, INFO, DEBUG [default: INFO]')
+    args = parser.parse_args()
 
     # Read config into active configuration
     options, args = parser.parse_args()
+    '''
 
-    paramiko_level = getattr(paramiko.common, options.level)
+    paramiko_level = getattr(paramiko.common, args.level)
     paramiko.common.logging.basicConfig(level=paramiko_level)
 
     if os.path.isfile('/etc/ssh_coupler.conf'):
@@ -191,7 +182,7 @@ def main():
         root_logger.log(INFO, '/etc/ssh_coupler.conf not found. Exiting')
         sys.exit(1)
 
-    start_server(options.host, options.port, HOST_KEY, options.level)
+    start_server(args.host, args.port, HOST_KEY, args.level)
 
 
 if __name__ == '__main__':
