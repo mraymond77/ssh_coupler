@@ -162,7 +162,6 @@ def main():
 
     # Read config into active configuration
     options, args = parser.parse_args()
-    '''
 
     paramiko_level = getattr(paramiko.common, args.level)
     paramiko.common.logging.basicConfig(level=paramiko_level)
