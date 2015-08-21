@@ -18,11 +18,11 @@ import os
 import pam
 import socket
 import sys
-import textwrap
 import traceback
 
 import paramiko
 from paramiko.common import DEBUG, INFO
+from collections import deque
 from threading import Thread
 
 HOST, PORT = '0.0.0.0', 2222
@@ -47,6 +47,13 @@ class Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
+# Actor decorator
+def actor(func):
+    def register_gen(*args, **kwargs):
+        args[0]._registry[func.__name__] = func(*args, **kwargs)
+        args[0]._registry[func.__name__].next()
+    return register_gen
+
 # overridden paramiko.SFTPServer __init__ and start_subsystem to enable packet interchange 
 # between outer client and inner sshd. 
 class MiddleManSFTPServer(paramiko.SFTPServer):
@@ -61,6 +68,9 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.privkey = paramiko.rsakey.RSAKey(filename=_CONFIG[self.dest_username][2])
         self.hostkeytype = None
         self.hostkey = None
+        # coroutine actors
+        self._registry = {}
+        self._msg_queue = deque()
         try:
             self.host_keys = paramiko.util.load_host_keys(os.path.expanduser('/home/%s/.ssh/known_hosts' % self.transport.get_username()))
         except IOError:
@@ -91,17 +101,13 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.finish_subsystem()
         self.transport.close()
 
-
-    def start_subsystem(self, name, transport, channel):
-        self.sock = channel
-        self._log(INFO, '%s: Starting channel coupling' % (self.client_addr))
-        self._send_server_version()
+    @actor
+    def client_broker(self):
         while True:
             try:
-                # cross wires between source ssh client and end target sshd.
-                # source is connection between user client and the paramiko sftp server
-                # dest is connection between paramiko sftp client and end target sshd
-                source_t, source_data = self._read_packet()
+                print("client broker here. trying to read packet!")
+                client_t, client_data = self._read_packet()
+                print("by jo I gort it!")
             except EOFError:
                 self._log(INFO, '%s: Server received EOF -- end of session' % self.client_addr)
                 self.cleanup()
@@ -111,10 +117,22 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                 self._log(DEBUG, paramiko.util.tb_strings())
                 self.cleanup()
                 return
+            self._msg_queue.append(('daemon_broker', (client_t, client_data)))
+            dest_t, dest_data = yield
+            print("client_broker again, just got dest stuff. sending now.")
+            self._send_packet(dest_t, dest_data)
+            
+    @actor
+    def daemon_broker(self):
+        while True:
+            print("daemon_broker speaking. awaiting payload from queue.")
+            client_t, client_data = yield
+            print("about bloody time.. got it.")
             try:
-                self.inner_SFTPClient._send_packet(source_t, source_data)
+                self.inner_SFTPClient._send_packet(client_t, client_data)
                 dest_t, dest_data = self.inner_SFTPClient._read_packet()
-                self._send_packet(dest_t, dest_data)
+                print("now imma submit response to back to client_broker via queue")
+                self._msg_queue.append(('client_broker', (dest_t, dest_data)))
             except Exception as e:
                 self._log(DEBUG, 'Exception in server processing: ' + str(e))
                 self._log(DEBUG, paramiko.util.tb_strings())
@@ -122,6 +140,39 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                     self._send_status(request_number, paramiko.sftp.SFTP_FAILURE)
                 except:
                     pass
+    '''
+    def queue_append(self, broker, payload):
+        self._msg_queue.append((broker, payload))
+
+    def run_queue(self):
+        while self._msg_queue:
+            print("hi, im run_queu and I suck balls.")
+            print(self._msg_queue)
+            name, payload = self._msg_queue.popleft()
+            print("got my nut, blowing load on ", _registry[name])
+            _registry[name].send(payload)
+            print(self._msg_queue)
+    '''
+    def start_subsystem(self, name, transport, channel):
+        self.sock = channel
+        self._log(INFO, '%s: Starting channel coupling' % (self.client_addr))
+        self._send_server_version()
+        self.client_broker()
+        self.daemon_broker()
+        while True:
+                # cross wires between source ssh client and end target sshd.
+                # source is connection between user client and the paramiko sftp server
+                # dest is connection between paramiko sftp client and end target sshd
+            if self._msg_queue:
+                print("hi, im run_queue, heres the queue.")
+                print(self._msg_queue)
+                broker, payload = self._msg_queue.popleft()
+                print("run_queue sending payload to " + str(self._registry[broker]))
+                self._registry[broker].send(payload)
+                print("run_queue sent payload to " + str(self._registry[broker]))
+            else:
+                pass
+            
 
 
 def start_server(host, port, HOST_KEY, level):
@@ -161,8 +212,6 @@ def main():
     args = parser.parse_args()
 
     # Read config into active configuration
-    options, args = parser.parse_args()
-
     paramiko_level = getattr(paramiko.common, args.level)
     paramiko.common.logging.basicConfig(level=paramiko_level)
 
