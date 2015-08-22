@@ -1,19 +1,10 @@
 #!/usr/bin/env python2
 """
-Daemon for administratively coupling two ssh channels together. Currently
-it only supports sftp. ssh_coupler.py requires that a user account exists on 
-the base server (same server this daemon is running from) and that the base account
-has a rsa key for authentication the final target account, whose name should be
-identical. The username, hostname, port, and path to private key should be  
-in the configuration file, ssh_coupler.conf. When an end user authenticates
-as an account to this daemon, a client is stated and authenticates to the final
-target server, and the payloads of the packets are interchanged. It will appear
-to the user that they are simply connected to the base server, when it really is 
-connected through to the end target server. 
+Daemon for administratively coupling two ssh channels together.
 """
-
-import logging
+import ConfigParser
 import argparse
+import logging
 import os
 import pam
 import socket
@@ -68,7 +59,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.privkey = paramiko.rsakey.RSAKey(filename=_CONFIG[self.dest_username][2])
         self.hostkeytype = None
         self.hostkey = None
-        # coroutine actors
+        # coroutine actors' registry and queue
         self._registry = {}
         self._msg_queue = deque()
         try:
@@ -93,7 +84,6 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                 pass
             sys.exit(1)
 
-
     def cleanup(self):
         self._log(DEBUG, '%s: Closing associated SFTPClient connection.' % self.client_addr)
         self.inner_SFTPClient.close()
@@ -103,11 +93,10 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
 
     @actor
     def client_broker(self):
+        ''' client_t, client_data is data from user client to the paramiko sftp server'''
         while True:
             try:
-                print("client broker here. trying to read packet!")
                 client_t, client_data = self._read_packet()
-                print("by jo I gort it!")
             except EOFError:
                 self._log(INFO, '%s: Server received EOF -- end of session' % self.client_addr)
                 self.cleanup()
@@ -119,19 +108,16 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                 return
             self._msg_queue.append(('daemon_broker', (client_t, client_data)))
             dest_t, dest_data = yield
-            print("client_broker again, just got dest stuff. sending now.")
             self._send_packet(dest_t, dest_data)
             
     @actor
     def daemon_broker(self):
+        ''' dest_t, dest_data is data from end target sshd to the paramiko client. '''
         while True:
-            print("daemon_broker speaking. awaiting payload from queue.")
             client_t, client_data = yield
-            print("about bloody time.. got it.")
             try:
                 self.inner_SFTPClient._send_packet(client_t, client_data)
                 dest_t, dest_data = self.inner_SFTPClient._read_packet()
-                print("now imma submit response to back to client_broker via queue")
                 self._msg_queue.append(('client_broker', (dest_t, dest_data)))
             except Exception as e:
                 self._log(DEBUG, 'Exception in server processing: ' + str(e))
@@ -140,19 +126,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                     self._send_status(request_number, paramiko.sftp.SFTP_FAILURE)
                 except:
                     pass
-    '''
-    def queue_append(self, broker, payload):
-        self._msg_queue.append((broker, payload))
 
-    def run_queue(self):
-        while self._msg_queue:
-            print("hi, im run_queu and I suck balls.")
-            print(self._msg_queue)
-            name, payload = self._msg_queue.popleft()
-            print("got my nut, blowing load on ", _registry[name])
-            _registry[name].send(payload)
-            print(self._msg_queue)
-    '''
     def start_subsystem(self, name, transport, channel):
         self.sock = channel
         self._log(INFO, '%s: Starting channel coupling' % (self.client_addr))
@@ -160,19 +134,13 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self.client_broker()
         self.daemon_broker()
         while True:
-                # cross wires between source ssh client and end target sshd.
-                # source is connection between user client and the paramiko sftp server
-                # dest is connection between paramiko sftp client and end target sshd
             if self._msg_queue:
-                print("hi, im run_queue, heres the queue.")
-                print(self._msg_queue)
-                broker, payload = self._msg_queue.popleft()
-                print("run_queue sending payload to " + str(self._registry[broker]))
-                self._registry[broker].send(payload)
-                print("run_queue sent payload to " + str(self._registry[broker]))
-            else:
-                pass
-            
+                try:
+                    '''pop messages off the deque and send to respective generator.'''
+                    broker, payload = self._msg_queue.popleft()
+                    self._registry[broker].send(payload)
+                except StopIteration:
+                    self._log(INFO, '%s: disconnected' % (self.client_addr))
 
 
 def start_server(host, port, HOST_KEY, level):
@@ -216,22 +184,17 @@ def main():
     paramiko.common.logging.basicConfig(level=paramiko_level)
 
     if os.path.isfile('/etc/ssh_coupler.conf'):
-        with open('/etc/ssh_coupler.conf', 'r') as config_file:
-            hosts = [line.rstrip() for line in config_file]
-        hosts = [line.split() for line in hosts if line]
-        for h in hosts:
-            dest_username = h[0]
-            dest_hostname = h[1]
-            dest_port = int(h[2])
-            dest_privkey = h[3]
-            _CONFIG[dest_username] = [dest_hostname, dest_port, dest_privkey]
-        print(_CONFIG)
+        root_logger.log(INFO, 'Loading config from /etc/ssh_coupler.conf')
+        config = ConfigParser.ConfigParser()
+        config.read('/etc/ssh_coupler.conf')
+        for sec in config.sections():
+            dest_username = config.get(sec, 'user')
+            print(dest_username)
+            _CONFIG[dest_username] = [config.get(sec, 'hostname'), int(config.get(sec, 'port')), config.get(sec, 'identityfile')]
     else:
         root_logger.log(INFO, '/etc/ssh_coupler.conf not found. Exiting')
         sys.exit(1)
-
     start_server(args.host, args.port, HOST_KEY, args.level)
-
 
 if __name__ == '__main__':
     main()
