@@ -189,7 +189,6 @@ def main():
         config.read('/etc/ssh_coupler.conf')
         for sec in config.sections():
             dest_username = config.get(sec, 'user')
-            print(dest_username)
             _CONFIG[dest_username] = [config.get(sec, 'hostname'), int(config.get(sec, 'port')), config.get(sec, 'identityfile')]
     else:
         root_logger.log(INFO, '/etc/ssh_coupler.conf not found. Exiting')
