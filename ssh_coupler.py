@@ -18,7 +18,6 @@ from threading import Thread
 
 HOST, PORT = '0.0.0.0', 2222
 BACKLOG = 10
-HOST_KEY = paramiko.RSAKey(filename='/etc/ssh/ssh_host_rsa_key')
 PAM_AUTH = pam.pam()
 _CONFIG = {}
 
@@ -176,23 +175,27 @@ def main():
     parser = argparse.ArgumentParser(description="Couples two ssh channels together.")
     parser.add_argument('--host', '-H', default=HOST, help='listen on HOST [default: {}]'.format(HOST))
     parser.add_argument('--port', '-p', type=int, default=PORT, help='listen on PORT [default: {}]'.format(PORT))
+    parser.add_arguemnt('--file', '-f', default='/etc/ssh_coupler.conf', help='Full path of config file.')
+    parser.add_arguemnt('--key', '-k', default='/etc/ssh/ssh_host_rsa_key', help='Full path of host key file')
     parser.add_argument('--level', '-l', default='INFO', help='Debug level: WARNING, INFO, DEBUG [default: INFO]')
+
     args = parser.parse_args()
 
-    # Read config into active configuration
     paramiko_level = getattr(paramiko.common, args.level)
     paramiko.common.logging.basicConfig(level=paramiko_level)
 
-    if os.path.isfile('/etc/ssh_coupler.conf'):
-        root_logger.log(INFO, 'Loading config from /etc/ssh_coupler.conf')
+    # Read config into active configuration
+    if os.path.isfile(args.file):
+        root_logger.log(INFO, 'Loading config from ' + args.file)
         config = ConfigParser.ConfigParser()
-        config.read('/etc/ssh_coupler.conf')
+        config.read(args.file)
         for sec in config.sections():
             dest_username = config.get(sec, 'user')
             _CONFIG[dest_username] = [config.get(sec, 'hostname'), int(config.get(sec, 'port')), config.get(sec, 'identityfile')]
     else:
-        root_logger.log(INFO, '/etc/ssh_coupler.conf not found. Exiting')
+        root_logger.log(INFO, 'Configuration file ' + args.file + ' not found. Exiting.')
         sys.exit(1)
+    HOST_KEY = paramiko.RSAKey(args.key)
     start_server(args.host, args.port, HOST_KEY, args.level)
 
 if __name__ == '__main__':
