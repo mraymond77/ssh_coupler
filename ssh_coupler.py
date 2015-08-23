@@ -37,6 +37,10 @@ class Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
+    def check_channel_shell_request(self, channel):
+        # Todo: figure out packet exchange for shell mode
+        return False
+
 # Actor decorator
 def actor(func):
     def register_gen(*args, **kwargs):
@@ -175,8 +179,8 @@ def main():
     parser = argparse.ArgumentParser(description="Couples two ssh channels together.")
     parser.add_argument('--host', '-H', default=HOST, help='listen on HOST [default: {}]'.format(HOST))
     parser.add_argument('--port', '-p', type=int, default=PORT, help='listen on PORT [default: {}]'.format(PORT))
-    parser.add_arguemnt('--file', '-f', default='/etc/ssh_coupler.conf', help='Full path of config file.')
-    parser.add_arguemnt('--key', '-k', default='/etc/ssh/ssh_host_rsa_key', help='Full path of host key file')
+    parser.add_argument('--file', '-f', default='/etc/ssh_coupler.conf', help='Full path of config file.')
+    parser.add_argument('--key', '-k', default='/etc/ssh/ssh_host_rsa_key', help='Full path of host key file')
     parser.add_argument('--level', '-l', default='INFO', help='Debug level: WARNING, INFO, DEBUG [default: INFO]')
 
     args = parser.parse_args()
@@ -195,7 +199,7 @@ def main():
     else:
         root_logger.log(INFO, 'Configuration file ' + args.file + ' not found. Exiting.')
         sys.exit(1)
-    HOST_KEY = paramiko.RSAKey(args.key)
+    HOST_KEY = paramiko.RSAKey(filename=args.key)
     start_server(args.host, args.port, HOST_KEY, args.level)
 
 if __name__ == '__main__':
