@@ -38,7 +38,13 @@ class Server(paramiko.ServerInterface):
         return paramiko.OPEN_SUCCEEDED
 
     def check_channel_shell_request(self, channel):
-        # Todo: figure out packet exchange for shell mode
+        # highjacked subsystem_handler table to add shell handler.
+        name = 'shell'
+        handler_class, larg, kwarg = channel.get_transport()._get_subsystem_handler(name)
+        if handler_class == None:
+            return False
+        handler = handler_class(channel, name, self, *larg, **kwarg)
+        handler.start()
         return False
 
 # Actor decorator
@@ -47,6 +53,40 @@ def actor(func):
         args[0]._registry[func.__name__] = func(*args, **kwargs)
         args[0]._registry[func.__name__].next()
     return register_gen
+
+# Class for handling packet exchange for shell requests.
+class MiddleManShellServer(SubsystemHandler):
+    def __init__(self, channel, name, server, *largs, **kwargs):
+        self.client_addr = kwargs.pop('client_addr')
+        self.transport = channel.get_transport()
+        super(MiddleManShellServer, self).__init__(channel, name, server)
+        self.dest_username = self.transport.get_username()
+        self.dest_hostname = _CONFIG[self.dest_username][0]
+        self.dest_port = _CONFIG[self.dest_username][1]
+        self.privkey = paramiko.rsakey.RSAKey(filename=_CONFIG[self.dest_username][2])
+        self.hostkeytype = None
+        self.hostkey = None
+        # coroutine actors' registry and queue
+        self._registry = {}
+        self._msg_queue = deque()
+        try:
+            self.host_keys = paramiko.util.load_host_keys(os.path.expanduser('/home/%s/.ssh/known_hosts' % self.transport.get_username()))
+        except IOError:
+            root_logger.log(INFO, '*** Unable to open host keys file')
+            self.host_keys = {}
+        if self.dest_hostname in self.host_keys:
+            self.hostkeytype = self.host_keys[self.dest_hostname].keys()[0]
+            self.hostkey = self.host_keys[self.dest_hostname][self.hostkeytype]
+            root_logger.log(INFO, 'Using host key of type %s' % self.hostkeytype)
+        try:
+            self.client_transport = paramiko.Transport((self.dest_hostname, self.dest_port))
+            self.client_transport.connect(self.hostkey, self.dest_username, pkey=self.privkey)
+            # add shell client 
+
+
+    def start_subsystem(self, name, transport, channel):
+        self.sock = channel
+        
 
 # overridden paramiko.SFTPServer __init__ and start_subsystem to enable packet interchange 
 # between outer client and inner sshd. 
@@ -165,6 +205,8 @@ def start_server(host, port, HOST_KEY, level):
         serv_transport = paramiko.Transport(conn)
         serv_transport.add_server_key(HOST_KEY)
         serv_transport.set_subsystem_handler('sftp', MiddleManSFTPServer, client_addr=client_addr)
+        # not a subsystem, but highjacking the subsystem_handler dict out of convenience.
+        serv_transport.set_subsystem_handler('shell', MiddleManShellServer, client_addr=client_addr)
         server = Server()
         try:
             serv_transport.start_server(server=server)
