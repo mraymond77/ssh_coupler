@@ -37,7 +37,7 @@ class Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
-    def check_channel_shell_request(self, channel):
+    def check_channel_pty_request(self, channel):
         # highjacked subsystem_handler table to add shell handler.
         name = 'shell'
         handler_class, larg, kwarg = channel.get_transport()._get_subsystem_handler(name)
@@ -54,8 +54,11 @@ def actor(func):
         args[0]._registry[func.__name__].next()
     return register_gen
 
+class ShellExchange(paramiko.BaseSFTP):
+
 # Class for handling packet exchange for shell requests.
-class MiddleManShellServer(SubsystemHandler):
+# Confusing that it inherits from SFTPServer I know, but its gots methods I's needs.
+class MiddleManShellServer(paramiko.SFTPServer):
     def __init__(self, channel, name, server, *largs, **kwargs):
         self.client_addr = kwargs.pop('client_addr')
         self.transport = channel.get_transport()
@@ -70,19 +73,20 @@ class MiddleManShellServer(SubsystemHandler):
         self._registry = {}
         self._msg_queue = deque()
         try:
-            self.host_keys = paramiko.util.load_host_keys(os.path.expanduser('/home/%s/.ssh/known_hosts' % self.transport.get_username()))
+            self.host_keys = paramiko.util.load_host_keys('/home/{}/.ssh/known_hosts'.format(self.transport.get_username()))
         except IOError:
             root_logger.log(INFO, '*** Unable to open host keys file')
             self.host_keys = {}
         if self.dest_hostname in self.host_keys:
             self.hostkeytype = self.host_keys[self.dest_hostname].keys()[0]
             self.hostkey = self.host_keys[self.dest_hostname][self.hostkeytype]
-            root_logger.log(INFO, 'Using host key of type %s' % self.hostkeytype)
+            root_logger.log(INFO, 'Using host key of type {}}'.format(self.hostkeytype))
         try:
             self.client_transport = paramiko.Transport((self.dest_hostname, self.dest_port))
             self.client_transport.connect(self.hostkey, self.dest_username, pkey=self.privkey)
-            # add shell client 
-
+            # Open channel, request session, request pty
+            self.client_session = client_transport.open_session()
+            self.client_session.get_pty()
 
     def start_subsystem(self, name, transport, channel):
         self.sock = channel
@@ -106,20 +110,20 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
         self._registry = {}
         self._msg_queue = deque()
         try:
-            self.host_keys = paramiko.util.load_host_keys(os.path.expanduser('/home/%s/.ssh/known_hosts' % self.transport.get_username()))
+            self.host_keys = paramiko.util.load_host_keys('/home/{}/.ssh/known_hosts'.format(self.transport.get_username()))
         except IOError:
             root_logger.log(INFO, '*** Unable to open host keys file')
             self.host_keys = {}
         if self.dest_hostname in self.host_keys:
             self.hostkeytype = self.host_keys[self.dest_hostname].keys()[0]
             self.hostkey = self.host_keys[self.dest_hostname][self.hostkeytype]
-            root_logger.log(INFO, 'Using host key of type %s' % self.hostkeytype)
+            root_logger.log(INFO, 'Using host key of type {}'.format(self.hostkeytype))
         try:
             self.client_transport = paramiko.Transport((self.dest_hostname, self.dest_port))
             self.client_transport.connect(self.hostkey, self.dest_username, pkey=self.privkey)
             self.inner_SFTPClient = paramiko.SFTPClient.from_transport(self.client_transport)
         except Exception as e:
-            root_logger.log(INFO, '*** Caught exception: %s: %s' % (e.__class__, e))
+            root_logger.log(INFO, '*** Caught exception: {0}: {1}'.format(e.__class__, e))
             traceback.print_exc()
             try:
                 self.client_transport.close()
@@ -128,7 +132,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
             sys.exit(1)
 
     def cleanup(self):
-        self._log(DEBUG, '%s: Closing associated SFTPClient connection.' % self.client_addr)
+        self._log(DEBUG, '{}: Closing associated SFTPClient connection.'.format(self.client_addr))
         self.inner_SFTPClient.close()
         self.inner_SFTPClient.sock.get_transport().close()
         self.finish_subsystem()
@@ -141,7 +145,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
             try:
                 client_t, client_data = self._read_packet()
             except EOFError:
-                self._log(INFO, '%s: Server received EOF -- end of session' % self.client_addr)
+                self._log(INFO, '{}: Server received EOF -- end of session'.format(self.client_addr))
                 self.cleanup()
                 return
             except Exception as e:
@@ -172,7 +176,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
 
     def start_subsystem(self, name, transport, channel):
         self.sock = channel
-        self._log(INFO, '%s: Starting channel coupling' % (self.client_addr))
+        self._log(INFO, '{}: Starting channel coupling'.format(self.client_addr))
         self._send_server_version()
         self.client_broker()
         self.daemon_broker()
@@ -183,7 +187,7 @@ class MiddleManSFTPServer(paramiko.SFTPServer):
                     broker, payload = self._msg_queue.popleft()
                     self._registry[broker].send(payload)
                 except StopIteration:
-                    self._log(INFO, '%s: disconnected' % (self.client_addr))
+                    self._log(INFO, '{}: disconnected'.format(self.client_addr))
 
 
 def start_server(host, port, HOST_KEY, level):
@@ -211,7 +215,7 @@ def start_server(host, port, HOST_KEY, level):
         try:
             serv_transport.start_server(server=server)
         except paramiko.SSHException:
-            root_logger.log(INFO, ' *** SSH negotiation failed with %s' % addr[0])
+            root_logger.log(INFO, ' *** SSH negotiation failed with {}'.format(addr[0]))
             serv_transport.close()
             continue
 
