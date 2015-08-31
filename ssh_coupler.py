@@ -37,9 +37,10 @@ class Server(paramiko.ServerInterface):
     def check_channel_request(self, kind, chanid):
         return paramiko.OPEN_SUCCEEDED
 
-    def check_channel_pty_request(self, channel):
+    def check_channel_pty_request(self, channel, term, width, height, pixelwidth, pixelheight,
+                                  modes):
         # highjacked subsystem_handler table to add shell handler.
-        name = 'shell'
+        name = 'pty-req'
         handler_class, larg, kwarg = channel.get_transport()._get_subsystem_handler(name)
         if handler_class == None:
             return False
@@ -54,7 +55,6 @@ def actor(func):
         args[0]._registry[func.__name__].next()
     return register_gen
 
-class ShellExchange(paramiko.BaseSFTP):
 
 # Class for handling packet exchange for shell requests.
 # Confusing that it inherits from SFTPServer I know, but its gots methods I's needs.
@@ -80,16 +80,76 @@ class MiddleManShellServer(paramiko.SFTPServer):
         if self.dest_hostname in self.host_keys:
             self.hostkeytype = self.host_keys[self.dest_hostname].keys()[0]
             self.hostkey = self.host_keys[self.dest_hostname][self.hostkeytype]
-            root_logger.log(INFO, 'Using host key of type {}}'.format(self.hostkeytype))
+            root_logger.log(INFO, 'Using host key of type {}'.format(self.hostkeytype))
         try:
             self.client_transport = paramiko.Transport((self.dest_hostname, self.dest_port))
             self.client_transport.connect(self.hostkey, self.dest_username, pkey=self.privkey)
             # Open channel, request session, request pty
-            self.client_session = client_transport.open_session()
-            self.client_session.get_pty()
+            self.inner_client_channel = self.client_transport.open_session()
+            self.inner_client_channel.get_pty()
+            self.inner_client_channel.invoke_shell()
+        except:
+            raise
+
+
+    def _read_all(self, n):
+        out = bytes()
+        while n > 0:
+            x = self.sock.recv(n)
+            if len(x) == 0:
+                raise EOFError()
+            out += x
+            n -= len(x)
+        return out
+
+    def _write_all(self, out):
+        while len(out) > 0:
+            n = self.sock.send(out)
+            print(n)
+            if n <= 0:
+                raise EOFError()
+            if n == len(out):
+                return
+            out = out[n:]
+        return
+
+    def cleanup(self):
+        self._log(DEBUG, '{}: Closing associated client connection.'.format(self.client_addr))
+        self.inner_client_channel.close()
+        self.inner_client_channel.get_transport().close()
+        self.finish_subsystem()
+        self.transport.close()
+
 
     def start_subsystem(self, name, transport, channel):
         self.sock = channel
+        self._log(INFO, '%s: Starting channel coupling' % (self.client_addr))
+        while True:
+            try:
+                dest_data = self.inner_client_channel.recv(4)
+                print(dest_data)
+                self._write_all(dest_data)
+            except Exception as e:
+                self._log(DEBUG, 'Exception in server processing: ' + str(e))
+                self._log(DEBUG, paramiko.util.tb_strings())
+                try:
+                    self._send_status(request_number, paramiko.sftp.SFTP_FAILURE)
+                except:
+                    pass
+            try:
+                source_data = self._read_all(4)
+                self.inner_client_channel.send(source_data)
+            except EOFError:
+                self._log(INFO, '%s: Server received EOF -- end of session' % self.client_addr)
+                self.cleanup()
+                return
+            except Exception as e:
+                self._log(DEBUG, 'Exception on channel: ' + str(e))
+                self._log(DEBUG, paramiko.util.tb_strings())
+                self.cleanup()
+                return
+
+
         
 
 # overridden paramiko.SFTPServer __init__ and start_subsystem to enable packet interchange 
@@ -210,7 +270,7 @@ def start_server(host, port, HOST_KEY, level):
         serv_transport.add_server_key(HOST_KEY)
         serv_transport.set_subsystem_handler('sftp', MiddleManSFTPServer, client_addr=client_addr)
         # not a subsystem, but highjacking the subsystem_handler dict out of convenience.
-        serv_transport.set_subsystem_handler('shell', MiddleManShellServer, client_addr=client_addr)
+        serv_transport.set_subsystem_handler('pty-req', MiddleManShellServer, client_addr=client_addr)
         server = Server()
         try:
             serv_transport.start_server(server=server)
